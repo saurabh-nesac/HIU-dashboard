@@ -1,0 +1,7 @@
+netCDF4
+numpy
+rasterio
+matplotlib
+gdal
+xarray
+tqdm
