@@ -3,3 +3,6 @@ rainfall_system/data/wrf_raw
 rainfall_system/data/cog
 rainfall_system/data/rgba_tif
 rainfall_system/backend/api/__pycache__
+wrfFrema
+rainfall_system/data/bin
+testfrema

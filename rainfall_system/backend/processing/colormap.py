@@ -2,13 +2,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 CMAP = plt.get_cmap("turbo")
-
 def rain_to_rgba(rain):
+    rain = np.clip(rain, 0, 50)
 
-    norm = np.clip(rain / 50.0, 0, 1)
+    norm = np.sqrt(rain / 50.0)
 
-    rgba = CMAP(norm)
+    r = np.zeros_like(norm)
+    g = norm * 255
+    b = (0.5 + 0.5 * norm) * 255
+    a = np.where(rain > 0.2, norm * 220, 0)
 
-    rgba[...,3] = np.where(rain > 0.1, 0.8, 0)
-
-    return (rgba * 255).astype(np.uint8)
+    return np.stack([r, g, b, a], axis=0).astype("uint8")

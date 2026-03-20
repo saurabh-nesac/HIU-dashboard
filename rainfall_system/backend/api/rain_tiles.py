@@ -16,24 +16,19 @@ EMPTY_TILE = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x
 # ------------------------------------------------
 # TILE CACHE
 # ------------------------------------------------
-
 @lru_cache(maxsize=5000)
 def get_tile(frame: int, z: int, x: int, y: int):
 
     tif = DATA / f"rain_{frame:03}.tif"
 
     try:
-
-        # with COGReader(input=str(tif), options={"nodata" : 0}) as cog:
-        with COGReader(tif) as cog:
+        with COGReader(input=str(tif), options={"nodata": 0}) as cog:
             img = cog.tile(x, y, z)
 
-        return img.render()
+        return img.render(img_format="PNG")
 
     except TileOutsideBounds:
         return EMPTY_TILE
-
-
 # ------------------------------------------------
 # API ENDPOINT
 # ------------------------------------------------

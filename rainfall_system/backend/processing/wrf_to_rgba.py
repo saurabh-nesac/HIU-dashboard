@@ -5,66 +5,57 @@ from scipy.ndimage import gaussian_filter
 from rasterio.transform import from_bounds
 from pathlib import Path
 
-INPUT = r"F:\Saurabh\dashboard\rainfall_system\data\wrf_raw\wrfout_d02_2025-10-15_00_00_00"
+from rainfall_step import compute_rain_step
+from colormap import rain_to_rgba
+
+INPUT = r"F:\Saurabh\dashboard\wrfFrema\3km\FREMAA_2024060500Z.nc"
 OUT = Path("data/rgba_tif")
 
-OUT.mkdir(exist_ok=True)
+OUT.mkdir(parents=True, exist_ok=True)
+
+BLUR_SIGMA = 1.2
 
 ds = xr.open_dataset(INPUT)
 
-rainc = ds["RAINC"]
-rainnc = ds["RAINNC"]
+rain_all = ds["rain"].values
+lat = ds["lat"].values
+lon = ds["lon"].values
 
-lat = ds["XLAT"][0].values
-lon = ds["XLONG"][0].values
+# Fix latitude orientation
+flip_lat = False
+if lat[0] > lat[-1]:
+    lat = lat[::-1]
+    flip_lat = True
 
+print("Processing frames...")
 
-def rain_to_rgba(rain):
+for t in range(1, len(ds.time)):
 
-    rain = np.clip(rain,0,80)
+    # 1. Time differencing
+    frame = compute_rain_step(rain_all, t)
 
-    r = np.zeros_like(rain)
-    g = rain * 2
-    b = rain * 4
+    # 2. Blur
+    frame = gaussian_filter(frame, sigma=BLUR_SIGMA)
 
-    a = np.where(rain>0.1,180,0)
+    # 3. Fix orientation
+    if flip_lat:
+        frame = np.flipud(frame)
 
-    rgba = np.stack([r,g,b,a],axis=0)
+    # 4. RGBA mapping
+    rgba = rain_to_rgba(frame)
 
-    return rgba.astype("uint8")
-
-
-for t in range(1,len(ds.Time)):
-
-    rain = (
-        rainc.isel(Time=t)+rainnc.isel(Time=t)
-        -
-        rainc.isel(Time=t-1)-rainnc.isel(Time=t-1)
-    )
-
-    rain = rain.values
-
-    rain[rain<0] = 0
-
-    rain = gaussian_filter(rain,1.3)
-
-    rgba = rain_to_rgba(rain)
-
-    height,width = rain.shape
+    height, width = frame.shape
 
     transform = from_bounds(
-        lon.min(),
-        lat.min(),
-        lon.max(),
-        lat.max(),
-        width,
-        height
+        lon.min(), lat.min(),
+        lon.max(), lat.max(),
+        width, height
     )
 
-    out = OUT / f"rain_{t:03}.tif"
+    out_file = OUT / f"rain_{t:03}.tif"
 
     with rasterio.open(
-        out,
+        out_file,
         "w",
         driver="GTiff",
         height=height,
@@ -74,7 +65,8 @@ for t in range(1,len(ds.Time)):
         crs="EPSG:4326",
         transform=transform
     ) as dst:
-
         dst.write(rgba)
 
-    print("Saved",out)
+    print(f"Saved: {out_file}")
+
+print("Done.")
