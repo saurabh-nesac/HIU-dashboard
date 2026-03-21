@@ -30,7 +30,7 @@ for t in range(1, len(ds.time)):
     frame = gaussian_filter(frame, sigma=BLUR_SIGMA)
 
     # normalize (important for GPU)
-    frame = np.clip(frame, 0, 50) / 50.0
+    frame = np.clip(frame, 0, 60) / 60.0
 
     # convert to float32
     frame = frame.astype("float32")
