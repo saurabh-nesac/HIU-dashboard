@@ -7,3 +7,6 @@ wrfFrema
 rainfall_system/data/bin
 testfrema
 data/bin
+GPM
+data
+GPM_hourly_bin
