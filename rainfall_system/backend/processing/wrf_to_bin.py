@@ -94,7 +94,9 @@ for t in range(1, len(ds.time)):
         ],
         "timestamps": frame_times,
         "lat": lat.tolist(),
-        "lon": lon.tolist()
+        "lon": lon.tolist(),
+        "nx": len(lon),
+        "ny": len(lat),
     }
 
     with open(OUT / "meta.json", "w") as f:

@@ -14,7 +14,7 @@
         }
 
         #map {
-            width: 100vw;
+            width: 50vw;
             height: 100vh;
         }
 
@@ -105,6 +105,15 @@
     </div>
 
     <div id="map"></div>
+    <div id="mapCompare" style="
+    position:absolute;
+    top:0;
+    right:0;
+    width:50%;
+    height:100%;
+    border-left:2px solid #222;
+    z-index:1;
+"></div>
 
     <div id="searchBox" style="
     position:absolute;
@@ -200,6 +209,14 @@
             <option value="linear" selected>Linear (GPU)</option>
             <option value="gaussian">Gaussian</option>
         </select>
+
+        <label>Dataset:</label>
+        <select id="datasetSelect">
+            <option value="wrf" selected>WRF Bin</option>
+            <option value="gpm">GPM Hourly</option>
+        </select>
+
+        <button id="openVerify">📊 Verify</button>
     </div>
 
     <div id="meteogramPanel" style="
@@ -219,6 +236,31 @@
         <canvas id="meteogram"></canvas>
     </div>
 
+    <div id="verifyPanel" style="
+    position:absolute;
+    top:60px;
+    right:20px;
+    width:450px;
+    height:400px;
+    background:rgba(0,0,0,0.9);
+    color:white;
+    border-radius:10px;
+    padding:10px;
+    display:none;
+    z-index:9999;
+">
+        <button onclick="document.getElementById('verifyPanel').style.display='none'">✖</button>
+
+        <h3>Data Verification</h3>
+
+        <!-- <div>
+            <label>Selected Dataset:</label>
+            <span id="selectedDatasetLabel">WRF</span>
+        </div> -->
+
+        <canvas id="verifyChart"></canvas>
+    </div>
+
 
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -227,8 +269,8 @@
 
         // ================= GLOBAL =================
         let SCALE_MAX = 30;
-        const WIDTH = 396;
-        const HEIGHT = 423;
+        let WIDTH_WRF, HEIGHT_WRF;
+        let WIDTH_GPM, HEIGHT_GPM;
         const BBOX = [87.32, 19.35, 99.03, 30.66];
         let direction = 1; // +1 forward, -1 reverse
         let currentRequestId = 0;
@@ -237,24 +279,254 @@
 
         let USE_MAX_FILTER = false;
         let USE_NEIGH_MAX = false;
-        //==================timestamploading==========
-        let meta;
+
+        let framesLeft = {};
+        let framesRight = {};
+
+        //====boot======
+        async function boot() {
+
+            await loadMeta();
+
+            // load both datasets
+            await loadDataset(framesLeft, framesRight);
+
+            // use WRF as default for left map
+            frames = framesLeft;
+
+            // set correct grid size (WRF)
+            WIDTH = meta_wrf.nx;
+            HEIGHT = meta_wrf.ny;
+
+            loaded = true;
+
+            updateTimeLabel(1);
+
+            document.getElementById("loader").style.display = "none";
+
+            console.log("✅ All datasets ready");
+        }
+
+        boot();
+
+        async function loadDataset(framesLeft, frameRight) {
+            const base_left = "/data/bin/"
+            const base_right = "/GPM_hourly_bin/";
+            for (let i = 1; i <= 72; i++) {
+                const res_left = await fetch(`${base_left}rain_${String(i).padStart(3, '0')}.bin`);
+                const buf_left = await res_left.arrayBuffer();
+                framesLeft[i] = new Float32Array(buf_left);
+
+            }
+            for (let i = 1; i <= 72; i++) {
+                const res_right = await fetch(`${base_right}rain_${String(i).padStart(3, '0')}.bin`);
+                const buf_right = await res_right.arrayBuffer();
+                frameRight[i] = new Float32Array(buf_right);
+
+            }
+        }
+
+
+        let meta_GPM;
+        let meta_wrf;
 
         let LAT_ARR, LON_ARR;
 
         async function loadMeta() {
-            const res = await fetch(`/data/bin/meta.json`);
-            meta = await res.json();
+            const res_left = await fetch(`/data/bin/meta.json`);
+            meta_wrf = await res_left.json();
 
-            LAT_ARR = meta.lat;
-            LON_ARR = meta.lon;
+            const res_right = await fetch(`/GPM_hourly_bin/meta.json`);
+            meta_GPM = await res_right.json();
 
-            console.log("LAT size:", LAT_ARR?.length);
-            console.log("LON size:", LON_ARR?.length);
+
+            LAT_ARR_wrf = meta_wrf.lat;
+            LON_ARR_wrf = meta_wrf.lon;
+
+            LAT_ARR_GPM = meta_GPM.lat;
+            LON_ARR_GPM = meta_GPM.lon;
+
+            WIDTH_WRF = meta_wrf.nx;
+            HEIGHT_WRF = meta_wrf.ny;
+
+            WIDTH_GPM = meta_GPM.nx;
+            HEIGHT_GPM = meta_GPM.ny;
+
+            console.log("Grid:", WIDTH_WRF, HEIGHT_WRF);
+            console.log("Grid:", WIDTH_GPM, HEIGHT_GPM);
+
+            console.log("WRF LAT size:", LAT_ARR_wrf?.length, "x", LON_ARR_wrf?.length);
+
+            console.log("GPM LAT size:", LAT_ARR_GPM?.length, "x", LON_ARR_GPM?.length);
+        }
+        //===rain-layer=====
+
+        function createCompareLayer(framesRef) {
+            return {
+
+                id: 'rain-layer-compare',
+                type: 'custom',
+                renderingMode: '2d',
+
+                onAdd: function (map, gl) {
+
+                    const vs = `
+            attribute vec2 a_pos;
+            uniform mat4 u_matrix;
+            uniform vec2 u_min;
+            uniform vec2 u_max;
+            varying vec2 v_uv;
+
+            void main() {
+                v_uv = (a_pos - u_min) / (u_max - u_min);
+                gl_Position = u_matrix * vec4(a_pos, 0.0, 1.0);
+            }`;
+
+                    const fs = `
+            precision highp float;
+            uniform sampler2D u_rain;
+            varying vec2 v_uv;
+
+            void main() {
+
+                float t = texture2D(u_rain, v_uv).r;
+
+                vec3 c0 = vec3(0.0);
+                vec3 c1 = vec3(0.0, 0.2, 1.0);
+                vec3 c2 = vec3(0.0, 1.0, 1.0);
+                vec3 c3 = vec3(0.0, 1.0, 0.0);
+                vec3 c4 = vec3(1.0, 1.0, 0.0);
+                vec3 c6 = vec3(1.0, 0.0, 0.0);
+
+                vec3 color;
+
+                if (t < 0.15)
+                    color = mix(c0, c1, t / 0.15);
+                else if (t < 0.3)
+                    color = mix(c1, c2, (t - 0.15) / 0.15);
+                else if (t < 0.5)
+                    color = mix(c2, c3, (t - 0.3) / 0.2);
+                else if (t < 0.7)
+                    color = mix(c3, c4, (t - 0.5) / 0.2);
+                else
+                    color = mix(c4, c6, (t - 0.7) / 0.3);
+
+                float alpha = smoothstep(0.01, 0.2, t);
+                gl_FragColor = vec4(color, alpha);
+            }`;
+
+                    function compile(type, src) {
+                        const s = gl.createShader(type);
+                        gl.shaderSource(s, src);
+                        gl.compileShader(s);
+                        return s;
+                    }
+
+                    const program = gl.createProgram();
+                    gl.attachShader(program, compile(gl.VERTEX_SHADER, vs));
+                    gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fs));
+                    gl.linkProgram(program);
+
+                    this.program = program;
+                    this.texture = gl.createTexture();
+
+                    this.a_pos = gl.getAttribLocation(program, "a_pos");
+                    this.u_matrix = gl.getUniformLocation(program, "u_matrix");
+                    this.u_rain = gl.getUniformLocation(program, "u_rain");
+                    this.u_min = gl.getUniformLocation(program, "u_min");
+                    this.u_max = gl.getUniformLocation(program, "u_max");
+
+                    const [minLon, minLat, maxLon, maxLat] = BBOX;
+
+                    const p1 = maplibregl.MercatorCoordinate.fromLngLat([minLon, minLat]);
+                    const p2 = maplibregl.MercatorCoordinate.fromLngLat([maxLon, minLat]);
+                    const p3 = maplibregl.MercatorCoordinate.fromLngLat([minLon, maxLat]);
+                    const p4 = maplibregl.MercatorCoordinate.fromLngLat([maxLon, maxLat]);
+
+                    const vertices = new Float32Array([
+                        p1.x, p1.y,
+                        p2.x, p2.y,
+                        p3.x, p3.y,
+                        p3.x, p3.y,
+                        p2.x, p2.y,
+                        p4.x, p4.y
+                    ]);
+
+                    this.buffer = gl.createBuffer();
+                    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+                    gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+                    this.min = [Math.min(p1.x, p3.x), Math.min(p1.y, p2.y)];
+                    this.max = [Math.max(p2.x, p4.x), Math.max(p3.y, p4.y)];
+                },
+
+                render: function (gl, matrix) {
+
+                    if (!loaded) return;
+
+                    let data = framesRef[frame];
+                    if (!data) return;
+
+                    const rgba = new Uint8Array(data.length * 4);
+
+                    for (let i = 0; i < data.length; i++) {
+                        let v = data[i] / SCALE_MAX;
+                        v = Math.min(1, Math.max(0, v));
+                        const val = v * 255;
+
+                        rgba[i * 4 + 0] = val;
+                        rgba[i * 4 + 1] = val;
+                        rgba[i * 4 + 2] = val;
+                        rgba[i * 4 + 3] = 255;
+                    }
+
+                    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+
+                    gl.texImage2D(
+                        gl.TEXTURE_2D,
+                        0,
+                        gl.RGBA,
+                        WIDTH_GPM,
+                        HEIGHT_GPM,
+                        0,
+                        gl.RGBA,
+                        gl.UNSIGNED_BYTE,
+                        rgba
+                    );
+
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+                    gl.useProgram(this.program);
+
+                    gl.uniformMatrix4fv(this.u_matrix, false, matrix);
+                    gl.uniform2fv(this.u_min, this.min);
+                    gl.uniform2fv(this.u_max, this.max);
+
+                    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+                    gl.enableVertexAttribArray(this.a_pos);
+                    gl.vertexAttribPointer(this.a_pos, 2, gl.FLOAT, false, 0, 0);
+
+                    gl.activeTexture(gl.TEXTURE0);
+                    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+                    gl.uniform1i(this.u_rain, 0);
+
+                    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+                    mapCompare.triggerRepaint();
+                }
+            };
         }
 
+        //basepath
+
+
+        
+
+        //==================timestamploading==========
+
         function updateTimeLabel(frame) {
-            const ts = meta.timestamps[frame - 1];
+            const ts = meta_wrf.timestamps[frame - 1];
             const date = new Date(ts);
 
             document.getElementById("timeLabel").textContent = date.toUTCString();
@@ -302,67 +574,6 @@
         let loaded = false;
 
 
-
-        async function preloadFrames() {
-
-            const total = 72;
-            const concurrency = 8; // 🔥 optimal
-
-            let completed = 0;
-
-            async function loadFrame(i) {
-                const res = await fetch(`/data/bin/rain_${String(i).padStart(3, '0')}.bin`);
-                const buf = await res.arrayBuffer();
-                frames[i] = new Float32Array(buf);
-
-                completed++;
-
-                // update progress
-                const percent = Math.round((completed / total) * 100);
-                document.getElementById("progressBar").style.width = percent + "%";
-                document.getElementById("progressText").textContent =
-                    `Loading frames: ${completed}/${total}`;
-            }
-
-            // create batches
-            const tasks = [];
-
-            for (let i = 1; i <= total; i++) {
-                tasks.push(() => loadFrame(i));
-            }
-
-            // run in batches
-            const workers = new Array(concurrency).fill(null).map(async () => {
-                while (tasks.length) {
-                    const task = tasks.shift();
-                    if (task) await task();
-                }
-            });
-
-            await Promise.all(workers);
-
-            loaded = true;
-            console.log("Frames loaded (parallel)");
-        }
-
-        async function init() {
-            await loadMeta();
-            await preloadFrames();
-
-            updateTimeLabel(1);
-
-            // 👉 hide loader
-            const loader = document.getElementById("loader");
-
-            loader.style.opacity = "0";
-            loader.style.transition = "opacity 0.5s";
-
-            setTimeout(() => {
-                loader.style.display = "none";
-            }, 500);
-        }
-
-        init();
 
         //===============BLURMode=================
 
@@ -534,7 +745,7 @@
                         type: "raster",
                         tiles: BASEMAPS.dark,
                         tileSize: 256,
-                        maxzoom: 19,
+                        maxzoom: 12,
                         attribution: "© OpenStreetMap contributors © CARTO"
                     }
                 },
@@ -547,14 +758,80 @@
                 ]
             },
             center: [92, 26],
-            zoom: 6
+            zoom: 7
+        });
+
+        //===CompareMap===========
+        const mapCompare = new maplibregl.Map({
+            container: 'mapCompare',
+            style: {
+                version: 8,
+                sources: {
+                    basemap: {
+                        type: "raster",
+                        tiles: BASEMAPS.dark,
+                        tileSize: 256
+                    }
+                },
+                layers: [
+                    {
+                        id: "basemap-layer",
+                        type: "raster",
+                        source: "basemap"
+                    }
+                ]
+            },
+            center: [92, 26],
+            zoom: 7
+        });
+
+        // function syncMaps(mapA, mapB) {
+        //     mapA.on('move', () => {
+        //         const center = mapA.getCenter();
+        //         const zoom = mapA.getZoom();
+        //         const bearing = mapA.getBearing();
+        //         const pitch = mapA.getPitch();
+
+        //         mapB.jumpTo({ center, zoom, bearing, pitch });
+        //     });
+        // }
+
+        // syncMaps(map, mapCompare);
+        // syncMaps(mapCompare, map);
+
+
+        mapCompare.on('load', async () => {
+            // await init();
+
+            console.log("Right map loaded");
+
+            mapCompare.addSource('terrain', {
+                type: 'raster-dem',
+                tiles: [
+                    'https://api.maptiler.com/tiles/terrain-rgb-v2/{z}/{x}/{y}.png?key=rXxNYojI5TunEnE0Clu1'
+                ],
+                tileSize: 256,
+                maxzoom: 14
+            });
+
+            mapCompare.addLayer({
+                id: 'hillshade',
+                type: 'hillshade',
+                source: 'terrain',
+                paint: {
+                    'hillshade-exaggeration': 0.4
+                }
+            });
+
+            // 👉 Add GPM rain layer here
+            mapCompare.addLayer(createCompareLayer(framesRight));
         });
 
         basemapSelect.onchange = () => {
 
             const type = basemapSelect.value;
-
             map.getSource('basemap').setTiles(BASEMAPS[type]);
+            mapCompare.getSource('basemap').setTiles(BASEMAPS[type]);
 
         };
         //============SEARCH===================
@@ -591,6 +868,21 @@
             new maplibregl.Marker({ color: "yellow" })
                 .setLngLat([lon, lat])
                 .addTo(map);
+            
+            // fly to location
+            mapCompare.flyTo({
+                center: [lon, lat],
+                zoom: 8
+            });
+            mapCompare.fire('click', {
+                lngLat: { lng: lon, lat: lat }
+            });
+
+            // optional marker
+            new maplibregl.Marker({ color: "yellow" })
+                .setLngLat([lon, lat])
+                .addTo(mapCompare);
+            
         };
 
         searchInput.addEventListener("keydown", (e) => {
@@ -710,6 +1002,22 @@
             new maplibregl.Marker({ color: "lime" })
                 .setLngLat([lon, lat])
                 .addTo(map);
+
+            // fly to location
+            mapCompare.flyTo({
+                center: [lon, lat],
+                zoom: 8
+            });
+
+            // trigger existing logic (VERY IMPORTANT)
+            mapCompare.fire('click', {
+                lngLat: { lng: lon, lat: lat }
+            });
+
+            // optional marker
+            new maplibregl.Marker({ color: "lime" })
+                .setLngLat([lon, lat])
+                .addTo(mapCompare);
         };
 
         latInput.addEventListener("keydown", e => {
@@ -786,6 +1094,51 @@
             return idx;
         }
 
+
+        //===============Verify-Panel===================
+
+        openVerify.onclick = () => {
+            document.getElementById("verifyPanel").style.display = "block";
+        };
+
+        let verifyChart;
+
+        function drawVerifyChart(hourly, timestamps) {
+
+            const ctx = document.getElementById("verifyChart").getContext("2d");
+
+            if (verifyChart) verifyChart.destroy();
+
+            verifyChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: timestamps.map(t => {
+                        const d = new Date(t);
+                        return d.getUTCHours() + ":00";
+                    }),
+                    datasets: [
+                        {
+                            // label: `${DATASET.toUpperCase()} Rain`,
+                            data: hourly,
+                            borderColor: '#00e5ff',
+                            tension: 0.3,
+                            fill: false
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    animation: false,
+                    plugins: {
+                        legend: { labels: { color: '#ccc' } }
+                    },
+                    scales: {
+                        x: { ticks: { color: '#aaa' } },
+                        y: { ticks: { color: '#aaa' } }
+                    }
+                }
+            });
+        }
         // ================= LAYER =================
         map.on('load', () => {
 
@@ -926,17 +1279,17 @@
 
                     // 1️⃣ Gaussian blur (smooth rain field)
                     if (BLUR_MODE === "gaussian") {
-                        data = gaussianBlur2D(data, WIDTH, HEIGHT, GAUSS_RADIUS);
+                        data = gaussianBlur2D(data, WIDTH_WRF, HEIGHT_WRF, GAUSS_RADIUS);
                     }
 
                     // 2️⃣ Neighborhood max (radar style)
                     if (USE_NEIGH_MAX) {
-                        data = neighborhoodMax3x3(data, WIDTH, HEIGHT);
+                        data = neighborhoodMax3x3(data, WIDTH_WRF, HEIGHT_WRF);
                     }
 
                     // 3️⃣ Strong max filter (storm core detection)
                     if (USE_MAX_FILTER) {
-                        data = maxFilter2D(data, WIDTH, HEIGHT, 1);
+                        data = maxFilter2D(data, WIDTH_WRF, HEIGHT_WRF, 1);
                     }
 
                     let maxVal = -Infinity;
@@ -968,8 +1321,8 @@
                         gl.TEXTURE_2D,
                         0,
                         gl.RGBA,
-                        WIDTH,
-                        HEIGHT,
+                        WIDTH_WRF,
+                        HEIGHT_WRF,
                         0,
                         gl.RGBA,
                         gl.UNSIGNED_BYTE,
@@ -1053,6 +1406,7 @@
 
             map.addLayer(customLayer);
 
+
             let activeMarker = null;
 
             map.on('click', (e) => {
@@ -1081,7 +1435,7 @@
                 const xi = findNearestIndex(LON_ARR, lon);
                 const yi = findNearestIndex(LAT_ARR, lat);
 
-                const index = yi * WIDTH + xi;
+                const index = yi * WIDTH_WRF + xi;
 
                 // extract rainfall series
                 const hourly = [];
@@ -1090,13 +1444,13 @@
                     let data = frames[t];
 
                     if (BLUR_MODE === "gaussian") {
-                        data = gaussianBlur2D(data, WIDTH, HEIGHT, GAUSS_RADIUS);
+                        data = gaussianBlur2D(data, WIDTH_WRF, HEIGHT_WRF, GAUSS_RADIUS);
                     }
                     if (USE_NEIGH_MAX) {
-                        data = neighborhoodMax3x3(data, WIDTH, HEIGHT);
+                        data = neighborhoodMax3x3(data, WIDTH_WRF, HEIGHT_WRF);
                     }
                     if (USE_MAX_FILTER) {
-                        data = maxFilter2D(data, WIDTH, HEIGHT, 1);
+                        data = maxFilter2D(data, WIDTH_WRF, HEIGHT_WRF, 1);
                     }
                     if (!data) continue;
                     hourly.push(data[index]);
@@ -1115,11 +1469,14 @@
                 console.log("Sample values:", hourly.slice(0, 10));
                 console.log("Max:", Math.max(...hourly));
 
-                drawMeteogram(hourly, meta.timestamps);
+                drawMeteogram(hourly, meta_wrf.timestamps);
                 document.getElementById("meteogramPanel").style.display = "block";
                 console.log("Meteogram max:", Math.max(...hourly));
+
+                drawVerifyChart(hourly, meta_wrf.timestamps);
             });
         });
+
 
 
         let meteogramChart;
