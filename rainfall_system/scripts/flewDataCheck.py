@@ -10,6 +10,8 @@ ds = xr.open_dataset(r'F:\Saurabh\dashboard\wrfFrema\3km\FREMAA_2024060500Z.nc')
 rain_inst = ds['rain'].diff(dim='time')
 lat = ds['lat']
 lon = ds['lon']
+time_in = ds['time'].values
+print(time_in)
 
 # --- LOAD SHAPEFILE ---
 shp_path = r'rainfall_system\data\shapefile\ne_states.geojson'  # <-- your shapefile
@@ -62,7 +64,7 @@ ax.set_title(f"Time: {time_val}")
 
 # Time slider
 ax_time = plt.axes([0.2, 0.15, 0.6, 0.03])
-slider_time = Slider(ax_time, 'Time', 0, len(rain_inst.time)-1, valinit=t0, valstep=1)
+slider_time = Slider(ax_time, 'Time', 0, time_in , valinit=t0, valstep=1)
 
 # Min slider
 ax_min = plt.axes([0.2, 0.09, 0.25, 0.03])

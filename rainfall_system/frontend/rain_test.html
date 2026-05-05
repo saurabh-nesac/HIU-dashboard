@@ -197,6 +197,8 @@
         <span id="frameLabel">Frame: 1</span>
         <span id="timeLabel">--</span>
 
+        <label><input type="checkbox" id="syncToggle" checked> Sync</label>
+
         <label>Strength:</label>
         <input type="range" id="blurStrength" min="1" max="5" value="1">
 
@@ -325,7 +327,6 @@
 
             }
         }
-
 
         let meta_GPM;
         let meta_wrf;
@@ -464,7 +465,22 @@
 
                     if (!loaded) return;
 
-                    let data = framesRef[frame];
+                    let data = framesRight[frame];
+
+                    // 1️⃣ Gaussian blur
+                    if (BLUR_MODE === "gaussian") {
+                        data = gaussianBlur2D(data, WIDTH_GPM, HEIGHT_GPM, GAUSS_RADIUS);
+                    }
+
+                    // 2️⃣ Neighborhood max
+                    if (USE_NEIGH_MAX) {
+                        data = neighborhoodMax3x3(data, WIDTH_GPM, HEIGHT_GPM);
+                    }
+
+                    // 3️⃣ Strong max filter
+                    if (USE_MAX_FILTER) {
+                        data = maxFilter2D(data, WIDTH_GPM, HEIGHT_GPM, 1);
+                    }
                     if (!data) return;
 
                     const rgba = new Uint8Array(data.length * 4);
@@ -494,8 +510,10 @@
                         rgba
                     );
 
-                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                    const filter = (BLUR_MODE === "none") ? gl.NEAREST : gl.LINEAR;
+
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
 
                     gl.useProgram(this.program);
 
@@ -518,10 +536,35 @@
             };
         }
 
-        //basepath
+        //Sync Function
 
+        function syncMaps(mapA, mapB) {
+            let isSyncing = false;
 
-        
+            function sync(source, target) {
+                if (isSyncing) return;
+
+                isSyncing = true;
+
+                const center = source.getCenter();
+                const zoom = source.getZoom();
+                const bearing = source.getBearing();
+                const pitch = source.getPitch();
+
+                target.easeTo({
+                    center,
+                    zoom,
+                    bearing,
+                    pitch,
+                    duration: 0   // keep 0 for no lag
+                });
+
+                isSyncing = false;
+            }
+
+            mapA.on('move', () => sync(mapA, mapB));
+            mapB.on('move', () => sync(mapB, mapA));
+        }
 
         //==================timestamploading==========
 
@@ -570,10 +613,8 @@
         drawLegend();
 
         // ================= DATA =================
-        let frames = {};
+
         let loaded = false;
-
-
 
         //===============BLURMode=================
 
@@ -785,21 +826,6 @@
             zoom: 7
         });
 
-        // function syncMaps(mapA, mapB) {
-        //     mapA.on('move', () => {
-        //         const center = mapA.getCenter();
-        //         const zoom = mapA.getZoom();
-        //         const bearing = mapA.getBearing();
-        //         const pitch = mapA.getPitch();
-
-        //         mapB.jumpTo({ center, zoom, bearing, pitch });
-        //     });
-        // }
-
-        // syncMaps(map, mapCompare);
-        // syncMaps(mapCompare, map);
-
-
         mapCompare.on('load', async () => {
             // await init();
 
@@ -825,8 +851,65 @@
 
             // 👉 Add GPM rain layer here
             mapCompare.addLayer(createCompareLayer(framesRight));
+
+
         });
 
+        mapCompare.on('click', (e) => {
+
+            if (!loaded) return;
+
+            const lon = e.lngLat.lng;
+            const lat = e.lngLat.lat;
+
+            const [minLon, minLat, maxLon, maxLat] = BBOX;
+
+            if (lon < minLon || lon > maxLon || lat < minLat || lat > maxLat) return;
+
+            const xi_gpm = findNearestIndex(LON_ARR_GPM, lon);
+            const yi_gpm = findNearestIndex(LAT_ARR_GPM, lat);
+
+            const index_gpm = yi_gpm * WIDTH_GPM + xi_gpm;
+
+            // extract rainfall series
+            const hourly = [];
+
+            for (let t = 1; t <= 72; t++) {
+                let data = framesLeft[t];
+
+                if (BLUR_MODE === "gaussian") {
+                    data = gaussianBlur2D(data, WIDTH_GPM, HEIGHT_GPM, GAUSS_RADIUS);
+                }
+                if (USE_NEIGH_MAX) {
+                    data = neighborhoodMax3x3(data, WIDTH_GPM, HEIGHT_GPM);
+                }
+                if (USE_MAX_FILTER) {
+                    data = maxFilter2D(data, WIDTH_GPM, HEIGHT_GPM, 1);
+                }
+                if (!data) continue;
+                hourly.push(data[t][index_wrf]);
+                hourly_right.push(framesRight[t][index_gpm]);
+            }
+
+            // remove previous marker
+            if (activeMarker) {
+                activeMarker.remove();
+            }
+
+            // create new marker
+            activeMarker = new maplibregl.Marker({ color: "#00ffff" }) // optional styling
+                .setLngLat([lon, lat])
+                .addTo(mapCompare);
+
+            console.log("Sample values:", hourly.slice(0, 10));
+            console.log("Max:", Math.max(...hourly));
+
+            drawMeteogram(hourly, meta_wrf.timestamps);
+            document.getElementById("meteogramPanel").style.display = "block";
+            console.log("Meteogram max:", Math.max(...hourly));
+        });
+
+        //====basemap-Select-Option========
         basemapSelect.onchange = () => {
 
             const type = basemapSelect.value;
@@ -868,7 +951,7 @@
             new maplibregl.Marker({ color: "yellow" })
                 .setLngLat([lon, lat])
                 .addTo(map);
-            
+
             // fly to location
             mapCompare.flyTo({
                 center: [lon, lat],
@@ -882,7 +965,7 @@
             new maplibregl.Marker({ color: "yellow" })
                 .setLngLat([lon, lat])
                 .addTo(mapCompare);
-            
+
         };
 
         searchInput.addEventListener("keydown", (e) => {
@@ -1027,7 +1110,7 @@
         lonInput.addEventListener("keydown", e => {
             if (e.key === "Enter") goLatLon.click();
         });
-        // ================= CONTROLS =================
+        //================= CONTROLS =================
         map.addControl(new maplibregl.NavigationControl());
 
         let playing = true;
@@ -1102,7 +1185,6 @@
         };
 
         let verifyChart;
-
         function drawVerifyChart(hourly, timestamps) {
 
             const ctx = document.getElementById("verifyChart").getContext("2d");
@@ -1139,6 +1221,131 @@
                 }
             });
         }
+
+        let meteogramChart;
+        function drawMeteogram(hourly, timestamps) {
+
+            const ctx = document.getElementById("meteogram").getContext("2d");
+
+            // cumulative
+            let cum = 0;
+            const cumulative = hourly.map(v => cum += v);
+
+            const labels = timestamps.map(t => {
+                const d = new Date(t);
+                return d.getUTCHours() + ":00";
+            });
+
+            if (meteogramChart) meteogramChart.destroy();
+
+            meteogramChart = new Chart(ctx, {
+                data: {
+                    labels,
+                    datasets: [
+
+                        // 🌧️ Rain bars
+                        {
+                            type: 'bar',
+                            label: 'Rain (mm/hr)',
+                            data: hourly,
+
+                            backgroundColor: hourly.map((v, i) => {
+
+                                if (i === frame - 1) return '#ff2d2d';
+
+                                if (v > 50) return '#ff0000';
+                                if (v > 20) return '#ff7f00';
+                                if (v > 10) return '#ffd700';
+                                if (v > 2) return '#00e5ff';
+                                return '#1e3a8a';
+                            }),
+
+                            borderWidth: hourly.map((_, i) => i === frame - 1 ? 2 : 0),
+                            borderColor: '#ffffff',
+
+                            barPercentage: 0.7,
+                            categoryPercentage: 0.9,
+                            borderRadius: 2,
+                            yAxisID: 'y'
+                        },
+
+                        // 📈 cumulative line
+                        {
+                            type: 'line',
+                            label: 'Cumulative (mm)',
+                            data: cumulative,
+                            borderColor: '#00ffcc',
+                            borderWidth: 2,
+                            tension: 0.4,
+                            fill: true,
+                            backgroundColor: 'rgba(0,255,200,0.08)',
+                            pointRadius: 0,
+                            yAxisID: 'y1'
+                        }
+                    ]
+                },
+
+                options: {
+                    responsive: true,
+                    animation: false,
+
+                    plugins: {
+                        legend: {
+                            labels: { color: '#ccc' }
+                        },
+
+                        title: {
+                            display: true,
+                            text: 'Rainfall Meteogram',
+                            color: '#fff'
+                        },
+
+                        tooltip: {
+                            backgroundColor: '#111',
+                            borderColor: '#444',
+                            borderWidth: 1,
+                            callbacks: {
+                                label: (ctx) => `${ctx.raw.toFixed(2)} mm/hr`
+                            }
+                        }
+                    },
+
+                    scales: {
+                        x: {
+                            ticks: {
+                                color: '#aaa',
+                                maxTicksLimit: 8
+                            },
+                            grid: {
+                                color: 'rgba(255,255,255,0.05)'
+                            }
+                        },
+
+                        y: {
+                            position: 'left',
+                            title: {
+                                display: true,
+                                text: 'mm/hr',
+                                color: '#aaa'
+                            },
+                            ticks: { color: '#aaa' },
+                            grid: {
+                                color: 'rgba(255,255,255,0.05)'
+                            }
+                        },
+
+                        y1: {
+                            position: 'right',
+                            grid: { drawOnChartArea: false },
+                            ticks: { color: '#aaa' }
+                        }
+                    }
+                }
+            });
+        }
+
+
+
         // ================= LAYER =================
         map.on('load', () => {
 
@@ -1275,7 +1482,7 @@
 
                     if (!loaded) return;
 
-                    let data = frames[frame];
+                    let data = framesLeft[frame];
 
                     // 1️⃣ Gaussian blur (smooth rain field)
                     if (BLUR_MODE === "gaussian") {
@@ -1405,202 +1612,70 @@
             };
 
             map.addLayer(customLayer);
-
-
-            let activeMarker = null;
-
-            map.on('click', (e) => {
-
-                // if (!loaded || !LAT_ARR || !LON_ARR) {
-                //     console.warn("Data not ready yet");
-                //     return;
-                // }
-
-
-                if (!loaded) return;
-
-                const lon = e.lngLat.lng;
-                const lat = e.lngLat.lat;
-
-                const [minLon, minLat, maxLon, maxLat] = BBOX;
-
-                if (lon < minLon || lon > maxLon || lat < minLat || lat > maxLat) return;
-
-                // grid conversion
-                // const x = (lon - minLon) / (maxLon - minLon) * WIDTH;
-                // const y = (maxLat - lat) / (maxLat - minLat) * HEIGHT;
-
-                // const xi = Math.max(0, Math.min(WIDTH - 1, Math.floor(x)));
-                // const yi = Math.max(0, Math.min(HEIGHT - 1, Math.floor(y)));
-                const xi = findNearestIndex(LON_ARR, lon);
-                const yi = findNearestIndex(LAT_ARR, lat);
-
-                const index = yi * WIDTH_WRF + xi;
-
-                // extract rainfall series
-                const hourly = [];
-
-                for (let t = 1; t <= 72; t++) {
-                    let data = frames[t];
-
-                    if (BLUR_MODE === "gaussian") {
-                        data = gaussianBlur2D(data, WIDTH_WRF, HEIGHT_WRF, GAUSS_RADIUS);
-                    }
-                    if (USE_NEIGH_MAX) {
-                        data = neighborhoodMax3x3(data, WIDTH_WRF, HEIGHT_WRF);
-                    }
-                    if (USE_MAX_FILTER) {
-                        data = maxFilter2D(data, WIDTH_WRF, HEIGHT_WRF, 1);
-                    }
-                    if (!data) continue;
-                    hourly.push(data[index]);
-                }
-
-                // remove previous marker
-                if (activeMarker) {
-                    activeMarker.remove();
-                }
-
-                // create new marker
-                activeMarker = new maplibregl.Marker({ color: "#00ffff" }) // optional styling
-                    .setLngLat([lon, lat])
-                    .addTo(map);
-
-                console.log("Sample values:", hourly.slice(0, 10));
-                console.log("Max:", Math.max(...hourly));
-
-                drawMeteogram(hourly, meta_wrf.timestamps);
-                document.getElementById("meteogramPanel").style.display = "block";
-                console.log("Meteogram max:", Math.max(...hourly));
-
-                drawVerifyChart(hourly, meta_wrf.timestamps);
-            });
         });
 
+        let activeMarker = null;
 
+        map.on('click', (e) => {
 
-        let meteogramChart;
+            if (!loaded) return;
 
-        function drawMeteogram(hourly, timestamps) {
+            const lon = e.lngLat.lng;
+            const lat = e.lngLat.lat;
 
-            const ctx = document.getElementById("meteogram").getContext("2d");
+            const [minLon, minLat, maxLon, maxLat] = BBOX;
 
-            // cumulative
-            let cum = 0;
-            const cumulative = hourly.map(v => cum += v);
+            if (lon < minLon || lon > maxLon || lat < minLat || lat > maxLat) return;
 
-            const labels = timestamps.map(t => {
-                const d = new Date(t);
-                return d.getUTCHours() + ":00";
-            });
+            const xi_wrf = findNearestIndex(LON_ARR_wrf, lon);
+            const yi_wrf = findNearestIndex(LAT_ARR_wrf, lat);
 
-            if (meteogramChart) meteogramChart.destroy();
+            const xi_gpm = findNearestIndex(LON_ARR_GPM, lon);
+            const yi_gpm = findNearestIndex(LAT_ARR_GPM, lat);
 
-            meteogramChart = new Chart(ctx, {
-                data: {
-                    labels,
-                    datasets: [
+            const index_wrf = yi_wrf * WIDTH_WRF + xi_wrf;
+            const index_gpm = yi_gpm * WIDTH_GPM + xi_gpm;
 
-                        // 🌧️ Rain bars
-                        {
-                            type: 'bar',
-                            label: 'Rain (mm/hr)',
-                            data: hourly,
+            // extract rainfall series
+            const hourly = [];
 
-                            backgroundColor: hourly.map((v, i) => {
+            for (let t = 1; t <= 72; t++) {
+                let data = framesLeft[t];
 
-                                if (i === frame - 1) return '#ff2d2d';
-
-                                if (v > 50) return '#ff0000';
-                                if (v > 20) return '#ff7f00';
-                                if (v > 10) return '#ffd700';
-                                if (v > 2) return '#00e5ff';
-                                return '#1e3a8a';
-                            }),
-
-                            borderWidth: hourly.map((_, i) => i === frame - 1 ? 2 : 0),
-                            borderColor: '#ffffff',
-
-                            barPercentage: 0.7,
-                            categoryPercentage: 0.9,
-                            borderRadius: 2,
-                            yAxisID: 'y'
-                        },
-
-                        // 📈 cumulative line
-                        {
-                            type: 'line',
-                            label: 'Cumulative (mm)',
-                            data: cumulative,
-                            borderColor: '#00ffcc',
-                            borderWidth: 2,
-                            tension: 0.4,
-                            fill: true,
-                            backgroundColor: 'rgba(0,255,200,0.08)',
-                            pointRadius: 0,
-                            yAxisID: 'y1'
-                        }
-                    ]
-                },
-
-                options: {
-                    responsive: true,
-                    animation: false,
-
-                    plugins: {
-                        legend: {
-                            labels: { color: '#ccc' }
-                        },
-
-                        title: {
-                            display: true,
-                            text: 'Rainfall Meteogram',
-                            color: '#fff'
-                        },
-
-                        tooltip: {
-                            backgroundColor: '#111',
-                            borderColor: '#444',
-                            borderWidth: 1,
-                            callbacks: {
-                                label: (ctx) => `${ctx.raw.toFixed(2)} mm/hr`
-                            }
-                        }
-                    },
-
-                    scales: {
-                        x: {
-                            ticks: {
-                                color: '#aaa',
-                                maxTicksLimit: 8
-                            },
-                            grid: {
-                                color: 'rgba(255,255,255,0.05)'
-                            }
-                        },
-
-                        y: {
-                            position: 'left',
-                            title: {
-                                display: true,
-                                text: 'mm/hr',
-                                color: '#aaa'
-                            },
-                            ticks: { color: '#aaa' },
-                            grid: {
-                                color: 'rgba(255,255,255,0.05)'
-                            }
-                        },
-
-                        y1: {
-                            position: 'right',
-                            grid: { drawOnChartArea: false },
-                            ticks: { color: '#aaa' }
-                        }
-                    }
+                if (BLUR_MODE === "gaussian") {
+                    data = gaussianBlur2D(data, WIDTH_WRF, HEIGHT_WRF, GAUSS_RADIUS);
                 }
-            });
-        }
+                if (USE_NEIGH_MAX) {
+                    data = neighborhoodMax3x3(data, WIDTH_WRF, HEIGHT_WRF);
+                }
+                if (USE_MAX_FILTER) {
+                    data = maxFilter2D(data, WIDTH_WRF, HEIGHT_WRF, 1);
+                }
+                if (!data) continue;
+                hourly.push(data[t][index_wrf]);
+                hourly_right.push(framesRight[t][index_gpm]);
+            }
+
+            // remove previous marker
+            if (activeMarker) {
+                activeMarker.remove();
+            }
+
+            // create new marker
+            activeMarker = new maplibregl.Marker({ color: "#00ffff" }) // optional styling
+                .setLngLat([lon, lat])
+                .addTo(map);
+
+            console.log("Sample values:", hourly.slice(0, 10));
+            console.log("Max:", Math.max(...hourly));
+
+            drawMeteogram(hourly, meta_wrf.timestamps);
+            document.getElementById("meteogramPanel").style.display = "block";
+            console.log("Meteogram max:", Math.max(...hourly));
+        });
+
+        syncMaps(map, mapCompare);
+
 
     </script>
 

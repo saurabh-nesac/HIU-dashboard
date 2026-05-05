@@ -161,13 +161,13 @@ for i in range(0, len(files) - 1, 2):
     # ================================
     # FLIP LAT (match frontend)
     # ================================
-    rain_hourly = np.flipud(rain_hourly).astype(np.float32)
+    # rain_hourly = np.flipud(rain_hourly).astype(np.float32)
 
     # ================================
     # STORE META (ONCE)
     # ================================
     if LAT is None:
-        LAT = lat_sub[::-1].tolist()   # flipped
+        LAT = lat_sub.tolist()   # flipped
         LON = lon_sub.tolist()
 
     # ================================
