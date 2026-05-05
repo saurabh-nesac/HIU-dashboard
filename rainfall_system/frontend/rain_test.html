@@ -133,10 +133,10 @@
     border-radius:4px;
     border:none;
 ">
-            <option value="dark" selected>Dark</option>
+            <option value="dark">Dark</option>
             <option value="gray">Gray</option>
             <option value="light">Light</option>
-            <option value="osm">OSM</option>
+            <option value="osm" selected>OSM</option>
             <option value="terrain">Terrain</option>
             <option value="gray">Gray</option>
             <option value="satellite">Satellite</option>
@@ -784,7 +784,7 @@
                 sources: {
                     basemap: {
                         type: "raster",
-                        tiles: BASEMAPS.dark,
+                        tiles: BASEMAPS.osm,
                         tileSize: 256,
                         maxzoom: 12,
                         attribution: "© OpenStreetMap contributors © CARTO"
@@ -810,7 +810,7 @@
                 sources: {
                     basemap: {
                         type: "raster",
-                        tiles: BASEMAPS.dark,
+                        tiles: BASEMAPS.osm,
                         tileSize: 256
                     }
                 },
@@ -873,22 +873,32 @@
 
             // extract rainfall series
             const hourly = [];
+            const hourly_right = [];
 
             for (let t = 1; t <= 72; t++) {
-                let data = framesLeft[t];
+
+                let dataLeft = framesLeft[t];
+                let dataRight = framesRight[t];
 
                 if (BLUR_MODE === "gaussian") {
-                    data = gaussianBlur2D(data, WIDTH_GPM, HEIGHT_GPM, GAUSS_RADIUS);
+                    dataLeft = gaussianBlur2D(dataLeft, WIDTH_WRF, HEIGHT_WRF, GAUSS_RADIUS);
+                    dataRight = gaussianBlur2D(dataRight, WIDTH_GPM, HEIGHT_GPM, GAUSS_RADIUS);
                 }
+
                 if (USE_NEIGH_MAX) {
-                    data = neighborhoodMax3x3(data, WIDTH_GPM, HEIGHT_GPM);
+                    dataLeft = neighborhoodMax3x3(dataLeft, WIDTH_WRF, HEIGHT_WRF);
+                    dataRight = neighborhoodMax3x3(dataRight, WIDTH_GPM, HEIGHT_GPM);
                 }
+
                 if (USE_MAX_FILTER) {
-                    data = maxFilter2D(data, WIDTH_GPM, HEIGHT_GPM, 1);
+                    dataLeft = maxFilter2D(dataLeft, WIDTH_WRF, HEIGHT_WRF, 1);
+                    dataRight = maxFilter2D(dataRight, WIDTH_GPM, HEIGHT_GPM, 1);
                 }
-                if (!data) continue;
-                hourly.push(data[t][index_wrf]);
-                hourly_right.push(framesRight[t][index_gpm]);
+
+                if (!dataLeft || !dataRight) continue;
+
+                hourly.push(dataLeft[index_gpm]);
+                hourly_right.push(dataRight[index_gpm]);
             }
 
             // remove previous marker
@@ -1638,22 +1648,32 @@
 
             // extract rainfall series
             const hourly = [];
+            const hourly_right = [];
 
             for (let t = 1; t <= 72; t++) {
-                let data = framesLeft[t];
+
+                let dataLeft = framesLeft[t];
+                let dataRight = framesRight[t];
 
                 if (BLUR_MODE === "gaussian") {
-                    data = gaussianBlur2D(data, WIDTH_WRF, HEIGHT_WRF, GAUSS_RADIUS);
+                    dataLeft = gaussianBlur2D(dataLeft, WIDTH_WRF, HEIGHT_WRF, GAUSS_RADIUS);
+                    dataRight = gaussianBlur2D(dataRight, WIDTH_GPM, HEIGHT_GPM, GAUSS_RADIUS);
                 }
+
                 if (USE_NEIGH_MAX) {
-                    data = neighborhoodMax3x3(data, WIDTH_WRF, HEIGHT_WRF);
+                    dataLeft = neighborhoodMax3x3(dataLeft, WIDTH_WRF, HEIGHT_WRF);
+                    dataRight = neighborhoodMax3x3(dataRight, WIDTH_GPM, HEIGHT_GPM);
                 }
+
                 if (USE_MAX_FILTER) {
-                    data = maxFilter2D(data, WIDTH_WRF, HEIGHT_WRF, 1);
+                    dataLeft = maxFilter2D(dataLeft, WIDTH_WRF, HEIGHT_WRF, 1);
+                    dataRight = maxFilter2D(dataRight, WIDTH_GPM, HEIGHT_GPM, 1);
                 }
-                if (!data) continue;
-                hourly.push(data[t][index_wrf]);
-                hourly_right.push(framesRight[t][index_gpm]);
+
+                if (!dataLeft || !dataRight) continue;
+
+                hourly.push(dataLeft[index_wrf]);
+                hourly_right.push(dataRight[index_gpm]);
             }
 
             // remove previous marker
