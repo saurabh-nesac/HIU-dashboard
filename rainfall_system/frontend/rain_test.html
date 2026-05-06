@@ -13,9 +13,32 @@
             margin: 0;
         }
 
+        body {
+            margin: 0;
+            background: black;
+            overflow: hidden;
+        }
+
+        #mapWrapper {
+
+            position: absolute;
+
+            top: 50%;
+            left: 50%;
+
+            transform: translate(-50%, -50%);
+
+            background: #000;
+
+            border: 1px solid #333;
+
+            box-shadow:
+                0 0 20px rgba(0, 0, 0, 0.6);
+        }
+
         #map {
-            width: 50vw;
-            height: 100vh;
+            width: 100%;
+            height: 100%;
         }
 
         #controls {
@@ -104,16 +127,9 @@
 
     </div>
 
-    <div id="map"></div>
-    <div id="mapCompare" style="
-    position:absolute;
-    top:0;
-    right:0;
-    width:50%;
-    height:100%;
-    border-left:2px solid #222;
-    z-index:1;
-"></div>
+    <div id="mapWrapper">
+        <div id="map"></div>
+    </div>
 
     <div id="searchBox" style="
     position:absolute;
@@ -212,12 +228,6 @@
             <option value="gaussian">Gaussian</option>
         </select>
 
-        <label>Dataset:</label>
-        <select id="datasetSelect">
-            <option value="wrf" selected>WRF Bin</option>
-            <option value="gpm">GPM Hourly</option>
-        </select>
-
         <button id="openVerify">📊 Verify</button>
     </div>
 
@@ -285,13 +295,19 @@
         let framesLeft = {};
         let framesRight = {};
 
+        let SPLIT = 0.5;
+        const contourCache = {};
+
+
         //====boot======
         async function boot() {
 
             await loadMeta();
 
             // load both datasets
-            await loadDataset(framesLeft, framesRight);
+            await loadDataset();
+
+            preloadContours();
 
             // use WRF as default for left map
             frames = framesLeft;
@@ -311,110 +327,276 @@
 
         boot();
 
-        async function loadDataset(framesLeft, frameRight) {
-            const base_left = "/data/bin/"
-            const base_right = "/GPM_hourly_bin/";
-            for (let i = 1; i <= 72; i++) {
-                const res_left = await fetch(`${base_left}rain_${String(i).padStart(3, '0')}.bin`);
-                const buf_left = await res_left.arrayBuffer();
-                framesLeft[i] = new Float32Array(buf_left);
+        function resizeMapToBBox() {
 
+            const bboxWidth =
+                BBOX[2] - BBOX[0];
+
+            const bboxHeight =
+                BBOX[3] - BBOX[1];
+
+            const aspect =
+                bboxWidth / bboxHeight;
+
+            const winW = window.innerWidth;
+            const winH = window.innerHeight;
+
+            let w = winW;
+            let h = w / aspect;
+
+            if (h > winH) {
+
+                h = winH;
+                w = h * aspect;
             }
-            for (let i = 1; i <= 72; i++) {
-                const res_right = await fetch(`${base_right}rain_${String(i).padStart(3, '0')}.bin`);
-                const buf_right = await res_right.arrayBuffer();
-                frameRight[i] = new Float32Array(buf_right);
 
+            const wrapper =
+                document.getElementById("mapWrapper");
+
+            wrapper.style.width =
+                `${w}px`;
+
+            wrapper.style.height =
+                `${h}px`;
+
+            map.resize();
+        }
+
+        async function loadDataset() {
+
+            const base = "/data/bin/";
+
+            const promises = [];
+
+            for (let i = 1; i <= 72; i++) {
+
+                promises.push(
+
+                    fetch(`${base}rain_${String(i).padStart(3, '0')}.bin`)
+                        .then(r => r.arrayBuffer())
+                        .then(buf => {
+
+                            framesLeft[i] =
+                                new Float32Array(buf);
+
+                            console.log(`✅ WRF frame ${i}`);
+                        })
+                );
+            }
+
+            await Promise.all(promises);
+
+            console.log("✅ WRF dataset loaded");
+        }
+
+        function setFrame(newFrame) {
+
+            frame = newFrame;
+
+            if (frame > 72) frame = 1;
+            if (frame < 1) frame = 72;
+
+            timeline.value = frame;
+
+            document.getElementById("frameLabel").textContent =
+                `Frame: ${frame}`;
+
+            updateTimeLabel(frame);
+
+            loadContours(frame);
+
+            map.triggerRepaint();
+        }
+
+        async function loadContours(frame) {
+
+            // already cached
+            if (contourCache[frame]) {
+
+                if (map.getSource('gpm-contours')) {
+                    map.getSource('gpm-contours')
+                        .setData(contourCache[frame]);
+                }
+
+                return;
+            }
+
+            const url =
+                `/contours/contour_${String(frame).padStart(3, '0')}.geojson`;
+
+            const res = await fetch(url);
+
+            const data = await res.json();
+
+            // store in RAM
+            contourCache[frame] = data;
+
+            if (map.getSource('gpm-contours')) {
+
+                map.getSource('gpm-contours')
+                    .setData(data);
+
+            } else {
+
+                map.addSource('gpm-contours', {
+                    type: 'geojson',
+                    data
+                });
+
+                map.addLayer({
+
+                    id: 'gpm-contours-line',
+                    type: 'line',
+                    source: 'gpm-contours',
+
+                    layout: {
+                        'line-join': 'round',
+                        'line-cap': 'round'
+                    },
+
+                    paint: {
+
+                        'line-color': [
+                            'interpolate',
+                            ['linear'],
+                            ['get', 'value'],
+
+                            1, '#00e5ff',
+                            5, '#00ff00',
+                            10, '#ffff00',
+                            20, '#ff9900',
+                            50, '#ff0000',
+                            100, '#ff00ff'
+                        ],
+
+                        'line-width': [
+                            'interpolate',
+                            ['linear'],
+                            ['zoom'],
+
+                            5, [
+                                'interpolate',
+                                ['linear'],
+                                ['get', 'value'],
+
+                                1, 2,
+                                5, 3,
+                                10, 4,
+                                20, 5,
+                                50, 7,
+                                100, 9
+                            ],
+
+                            9, [
+                                'interpolate',
+                                ['linear'],
+                                ['get', 'value'],
+
+                                1, 3,
+                                5, 5,
+                                10, 6,
+                                20, 8,
+                                50, 10,
+                                100, 14
+                            ]
+                        ],
+
+                        'line-opacity': 0.95,
+                        'line-blur': 0.3
+                    }
+                });
             }
         }
 
-        let meta_GPM;
-        let meta_wrf;
+        async function preloadContours() {
 
-        let LAT_ARR, LON_ARR;
+            for (let i = 1; i <= 72; i++) {
 
-        async function loadMeta() {
-            const res_left = await fetch(`/data/bin/meta.json`);
-            meta_wrf = await res_left.json();
+                const url =
+                    `/contours/contour_${String(i).padStart(3, '0')}.geojson`;
 
-            const res_right = await fetch(`/GPM_hourly_bin/meta.json`);
-            meta_GPM = await res_right.json();
-
-
-            LAT_ARR_wrf = meta_wrf.lat;
-            LON_ARR_wrf = meta_wrf.lon;
-
-            LAT_ARR_GPM = meta_GPM.lat;
-            LON_ARR_GPM = meta_GPM.lon;
-
-            WIDTH_WRF = meta_wrf.nx;
-            HEIGHT_WRF = meta_wrf.ny;
-
-            WIDTH_GPM = meta_GPM.nx;
-            HEIGHT_GPM = meta_GPM.ny;
-
-            console.log("Grid:", WIDTH_WRF, HEIGHT_WRF);
-            console.log("Grid:", WIDTH_GPM, HEIGHT_GPM);
-
-            console.log("WRF LAT size:", LAT_ARR_wrf?.length, "x", LON_ARR_wrf?.length);
-
-            console.log("GPM LAT size:", LAT_ARR_GPM?.length, "x", LON_ARR_GPM?.length);
+                fetch(url)
+                    .then(r => r.json())
+                    .then(data => {
+                        contourCache[i] = data;
+                        console.log(`✅ Cached contour ${i}`);
+                    });
+            }
         }
-        //===rain-layer=====
 
-        function createCompareLayer(framesRef) {
+        function toRGBA(data, width, height) {
+
+            const rgba = new Uint8Array(width * height * 4);
+
+            for (let i = 0; i < data.length; i++) {
+
+                let d = data[i];
+
+                // 🚫 mask invalid / no rain
+                if (!isFinite(d) || d <= 0) {
+                    rgba[i * 4 + 3] = 0; // transparent
+                    continue;
+                }
+
+                // normalize
+                let v = d / SCALE_MAX;
+                v = Math.min(1, Math.max(0, v));
+
+                rgba[i * 4 + 0] = v * 255;  // only R channel
+                rgba[i * 4 + 1] = 0;
+                rgba[i * 4 + 2] = 0;
+                rgba[i * 4 + 3] = 255;
+            }
+
+            return rgba;
+        }
+
+        function createSplitLayer() {
             return {
-
-                id: 'rain-layer-compare',
+                id: 'rain-split',
                 type: 'custom',
                 renderingMode: '2d',
 
                 onAdd: function (map, gl) {
 
                     const vs = `
-            attribute vec2 a_pos;
-            uniform mat4 u_matrix;
-            uniform vec2 u_min;
-            uniform vec2 u_max;
-            varying vec2 v_uv;
+                    attribute vec2 a_pos;
+                    uniform mat4 u_matrix;
+                    uniform vec2 u_min;
+                    uniform vec2 u_max;
+                    varying vec2 v_uv;
 
-            void main() {
-                v_uv = (a_pos - u_min) / (u_max - u_min);
-                gl_Position = u_matrix * vec4(a_pos, 0.0, 1.0);
-            }`;
+                    void main() {
+                        v_uv = (a_pos - u_min) / (u_max - u_min);
+                        gl_Position = u_matrix * vec4(a_pos, 0.0, 1.0);
+                    }`;
 
                     const fs = `
-            precision highp float;
-            uniform sampler2D u_rain;
-            varying vec2 v_uv;
+                    precision highp float;
 
-            void main() {
+                    uniform sampler2D u_wrf;
 
-                float t = texture2D(u_rain, v_uv).r;
+                    varying vec2 v_uv;
 
-                vec3 c0 = vec3(0.0);
-                vec3 c1 = vec3(0.0, 0.2, 1.0);
-                vec3 c2 = vec3(0.0, 1.0, 1.0);
-                vec3 c3 = vec3(0.0, 1.0, 0.0);
-                vec3 c4 = vec3(1.0, 1.0, 0.0);
-                vec3 c6 = vec3(1.0, 0.0, 0.0);
+                    vec3 colorMap(float t) {
+                        if (t < 0.15) return mix(vec3(0.0), vec3(0.0,0.2,1.0), t/0.15);
+                        else if (t < 0.3) return mix(vec3(0.0,0.2,1.0), vec3(0.0,1.0,1.0), (t-0.15)/0.15);
+                        else if (t < 0.5) return mix(vec3(0.0,1.0,1.0), vec3(0.0,1.0,0.0), (t-0.3)/0.2);
+                        else if (t < 0.7) return mix(vec3(0.0,1.0,0.0), vec3(1.0,1.0,0.0), (t-0.5)/0.2);
+                        else return mix(vec3(1.0,1.0,0.0), vec3(1.0,0.0,0.0), (t-0.7)/0.3);
+                    }
 
-                vec3 color;
+                    void main() {
+                        float t;
 
-                if (t < 0.15)
-                    color = mix(c0, c1, t / 0.15);
-                else if (t < 0.3)
-                    color = mix(c1, c2, (t - 0.15) / 0.15);
-                else if (t < 0.5)
-                    color = mix(c2, c3, (t - 0.3) / 0.2);
-                else if (t < 0.7)
-                    color = mix(c3, c4, (t - 0.5) / 0.2);
-                else
-                    color = mix(c4, c6, (t - 0.7) / 0.3);
+                        vec2 uv = v_uv;
+                        t = texture2D(u_wrf, uv).r;
 
-                float alpha = smoothstep(0.01, 0.2, t);
-                gl_FragColor = vec4(color, alpha);
-            }`;
+                        vec3 color = colorMap(t);
+                        float alpha = smoothstep(0.01, 0.2, t);
+
+                        gl_FragColor = vec4(color, alpha);
+                    }`;
 
                     function compile(type, src) {
                         const s = gl.createShader(type);
@@ -427,97 +609,104 @@
                     gl.attachShader(program, compile(gl.VERTEX_SHADER, vs));
                     gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fs));
                     gl.linkProgram(program);
-
-                    this.program = program;
-                    this.texture = gl.createTexture();
-
                     this.a_pos = gl.getAttribLocation(program, "a_pos");
+                    this.program = program;
+
+                    this.texWRF = gl.createTexture();
+                    // this.texGPM = gl.createTexture();
+
                     this.u_matrix = gl.getUniformLocation(program, "u_matrix");
-                    this.u_rain = gl.getUniformLocation(program, "u_rain");
-                    this.u_min = gl.getUniformLocation(program, "u_min");
-                    this.u_max = gl.getUniformLocation(program, "u_max");
+                    // this.u_split = gl.getUniformLocation(program, "u_split");
+                    this.u_wrf = gl.getUniformLocation(program, "u_wrf");
+                    // this.u_gpm = gl.getUniformLocation(program, "u_gpm");
 
                     const [minLon, minLat, maxLon, maxLat] = BBOX;
 
-                    const p1 = maplibregl.MercatorCoordinate.fromLngLat([minLon, minLat]);
-                    const p2 = maplibregl.MercatorCoordinate.fromLngLat([maxLon, minLat]);
-                    const p3 = maplibregl.MercatorCoordinate.fromLngLat([minLon, maxLat]);
-                    const p4 = maplibregl.MercatorCoordinate.fromLngLat([maxLon, maxLat]);
+                    this.u_min = gl.getUniformLocation(program, "u_min");
+                    this.u_max = gl.getUniformLocation(program, "u_max");
+
+
+
+                    const pBL = maplibregl.MercatorCoordinate.fromLngLat([minLon, minLat]);
+                    const pBR = maplibregl.MercatorCoordinate.fromLngLat([maxLon, minLat]);
+                    const pTL = maplibregl.MercatorCoordinate.fromLngLat([minLon, maxLat]);
+                    const pTR = maplibregl.MercatorCoordinate.fromLngLat([maxLon, maxLat]);
+
+                    this.min = [pBL.x, pBL.y];
+                    this.max = [pTR.x, pTR.y];
 
                     const vertices = new Float32Array([
-                        p1.x, p1.y,
-                        p2.x, p2.y,
-                        p3.x, p3.y,
-                        p3.x, p3.y,
-                        p2.x, p2.y,
-                        p4.x, p4.y
+
+                        pBL.x, pBL.y,
+                        pBR.x, pBR.y,
+                        pTL.x, pTL.y,
+
+                        pTL.x, pTL.y,
+                        pBR.x, pBR.y,
+                        pTR.x, pTR.y
                     ]);
 
                     this.buffer = gl.createBuffer();
                     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
                     gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
 
-                    this.min = [Math.min(p1.x, p3.x), Math.min(p1.y, p2.y)];
-                    this.max = [Math.max(p2.x, p4.x), Math.max(p3.y, p4.y)];
+                    console.log("🔥 Split layer added");
                 },
 
                 render: function (gl, matrix) {
 
+
                     if (!loaded) return;
 
-                    let data = framesRight[frame];
+                    const wrf = framesLeft[frame];
+                    // const gpm = framesRight[frame];
 
-                    // 1️⃣ Gaussian blur
+                    // if (!wrf || !gpm) return;
+
+                    let wrfData = wrf;
+
                     if (BLUR_MODE === "gaussian") {
-                        data = gaussianBlur2D(data, WIDTH_GPM, HEIGHT_GPM, GAUSS_RADIUS);
+                        wrfData = gaussianBlur2D(wrfData, WIDTH_WRF, HEIGHT_WRF, GAUSS_RADIUS);
                     }
 
-                    // 2️⃣ Neighborhood max
                     if (USE_NEIGH_MAX) {
-                        data = neighborhoodMax3x3(data, WIDTH_GPM, HEIGHT_GPM);
+                        wrfData = neighborhoodMax3x3(wrfData, WIDTH_WRF, HEIGHT_WRF);
                     }
 
-                    // 3️⃣ Strong max filter
                     if (USE_MAX_FILTER) {
-                        data = maxFilter2D(data, WIDTH_GPM, HEIGHT_GPM, 1);
-                    }
-                    if (!data) return;
+                        wrfData = maxFilter2D(wrfData, WIDTH_WRF, HEIGHT_WRF, 1);
 
-                    const rgba = new Uint8Array(data.length * 4);
-
-                    for (let i = 0; i < data.length; i++) {
-                        let v = data[i] / SCALE_MAX;
-                        v = Math.min(1, Math.max(0, v));
-                        const val = v * 255;
-
-                        rgba[i * 4 + 0] = val;
-                        rgba[i * 4 + 1] = val;
-                        rgba[i * 4 + 2] = val;
-                        rgba[i * 4 + 3] = 255;
                     }
 
-                    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+                    if (
+                        this.cacheFrame !== frame ||
+                        this.cacheScale !== SCALE_MAX
+                    ) {
 
-                    gl.texImage2D(
-                        gl.TEXTURE_2D,
-                        0,
-                        gl.RGBA,
-                        WIDTH_GPM,
-                        HEIGHT_GPM,
-                        0,
-                        gl.RGBA,
-                        gl.UNSIGNED_BYTE,
-                        rgba
-                    );
+                        this.texWRFData =
+                            toRGBA(wrfData, WIDTH_WRF, HEIGHT_WRF);
 
-                    const filter = (BLUR_MODE === "none") ? gl.NEAREST : gl.LINEAR;
+                        this.cacheFrame = frame;
+                        this.cacheScale = SCALE_MAX;
+                    }
 
-                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
-                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+                    // WRF
+                    gl.activeTexture(gl.TEXTURE0);
+                    gl.bindTexture(gl.TEXTURE_2D, this.texWRF);
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, WIDTH_WRF, HEIGHT_WRF, 0, gl.RGBA, gl.UNSIGNED_BYTE, this.texWRFData);
+
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
                     gl.useProgram(this.program);
 
                     gl.uniformMatrix4fv(this.u_matrix, false, matrix);
+                    // gl.uniform1f(this.u_split, SPLIT);
+
+                    gl.uniform1i(this.u_wrf, 0);
+
                     gl.uniform2fv(this.u_min, this.min);
                     gl.uniform2fv(this.u_max, this.max);
 
@@ -525,16 +714,32 @@
                     gl.enableVertexAttribArray(this.a_pos);
                     gl.vertexAttribPointer(this.a_pos, 2, gl.FLOAT, false, 0, 0);
 
-                    gl.activeTexture(gl.TEXTURE0);
-                    gl.bindTexture(gl.TEXTURE_2D, this.texture);
-                    gl.uniform1i(this.u_rain, 0);
-
                     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-                    mapCompare.triggerRepaint();
+                    console.log("🎯 Rendering frame");
                 }
             };
         }
+
+        let meta_GPM;
+        let meta_wrf;
+
+        let LAT_ARR, LON_ARR;
+
+        async function loadMeta() {
+            const res_left = await fetch(`/data/bin/meta.json`);
+            meta_wrf = await res_left.json();
+
+            LAT_ARR_wrf = meta_wrf.lat;
+            LON_ARR_wrf = meta_wrf.lon;
+
+            WIDTH_WRF = meta_wrf.nx;
+            HEIGHT_WRF = meta_wrf.ny;
+
+            console.log("WRF LAT size:", LAT_ARR_wrf?.length, "x", LON_ARR_wrf?.length);
+
+        }
+
 
         //Sync Function
 
@@ -776,9 +981,12 @@
                 "https://api.maptiler.com/tiles/satellite/{z}/{x}/{y}.jpg?key=rXxNYojI5TunEnE0Clu1"
             ]
         };
-
+        
         const map = new maplibregl.Map({
             container: 'map',
+            renderWorldCopies: false,
+            minZoom: 5,
+            maxZoom: 11,
             style: {
                 version: 8,
                 sources: {
@@ -786,7 +994,7 @@
                         type: "raster",
                         tiles: BASEMAPS.osm,
                         tileSize: 256,
-                        maxzoom: 12,
+                        maxzoom: 11,
                         attribution: "© OpenStreetMap contributors © CARTO"
                     }
                 },
@@ -798,133 +1006,21 @@
                     }
                 ]
             },
-            center: [92, 26],
-            zoom: 7
+            // center: [92, 26],
+            // zoom: 7,
+            
+            maxBounds: [
+                [BBOX[0], BBOX[1]],
+                [BBOX[2], BBOX[3]]
+            ],
         });
 
-        //===CompareMap===========
-        const mapCompare = new maplibregl.Map({
-            container: 'mapCompare',
-            style: {
-                version: 8,
-                sources: {
-                    basemap: {
-                        type: "raster",
-                        tiles: BASEMAPS.osm,
-                        tileSize: 256
-                    }
-                },
-                layers: [
-                    {
-                        id: "basemap-layer",
-                        type: "raster",
-                        source: "basemap"
-                    }
-                ]
-            },
-            center: [92, 26],
-            zoom: 7
-        });
-
-        mapCompare.on('load', async () => {
-            // await init();
-
-            console.log("Right map loaded");
-
-            mapCompare.addSource('terrain', {
-                type: 'raster-dem',
-                tiles: [
-                    'https://api.maptiler.com/tiles/terrain-rgb-v2/{z}/{x}/{y}.png?key=rXxNYojI5TunEnE0Clu1'
-                ],
-                tileSize: 256,
-                maxzoom: 14
-            });
-
-            mapCompare.addLayer({
-                id: 'hillshade',
-                type: 'hillshade',
-                source: 'terrain',
-                paint: {
-                    'hillshade-exaggeration': 0.4
-                }
-            });
-
-            // 👉 Add GPM rain layer here
-            mapCompare.addLayer(createCompareLayer(framesRight));
-
-
-        });
-
-        mapCompare.on('click', (e) => {
-
-            if (!loaded) return;
-
-            const lon = e.lngLat.lng;
-            const lat = e.lngLat.lat;
-
-            const [minLon, minLat, maxLon, maxLat] = BBOX;
-
-            if (lon < minLon || lon > maxLon || lat < minLat || lat > maxLat) return;
-
-            const xi_gpm = findNearestIndex(LON_ARR_GPM, lon);
-            const yi_gpm = findNearestIndex(LAT_ARR_GPM, lat);
-
-            const index_gpm = yi_gpm * WIDTH_GPM + xi_gpm;
-
-            // extract rainfall series
-            const hourly = [];
-            const hourly_right = [];
-
-            for (let t = 1; t <= 72; t++) {
-
-                let dataLeft = framesLeft[t];
-                let dataRight = framesRight[t];
-
-                if (BLUR_MODE === "gaussian") {
-                    dataLeft = gaussianBlur2D(dataLeft, WIDTH_WRF, HEIGHT_WRF, GAUSS_RADIUS);
-                    dataRight = gaussianBlur2D(dataRight, WIDTH_GPM, HEIGHT_GPM, GAUSS_RADIUS);
-                }
-
-                if (USE_NEIGH_MAX) {
-                    dataLeft = neighborhoodMax3x3(dataLeft, WIDTH_WRF, HEIGHT_WRF);
-                    dataRight = neighborhoodMax3x3(dataRight, WIDTH_GPM, HEIGHT_GPM);
-                }
-
-                if (USE_MAX_FILTER) {
-                    dataLeft = maxFilter2D(dataLeft, WIDTH_WRF, HEIGHT_WRF, 1);
-                    dataRight = maxFilter2D(dataRight, WIDTH_GPM, HEIGHT_GPM, 1);
-                }
-
-                if (!dataLeft || !dataRight) continue;
-
-                hourly.push(dataLeft[index_gpm]);
-                hourly_right.push(dataRight[index_gpm]);
-            }
-
-            // remove previous marker
-            if (activeMarker) {
-                activeMarker.remove();
-            }
-
-            // create new marker
-            activeMarker = new maplibregl.Marker({ color: "#00ffff" }) // optional styling
-                .setLngLat([lon, lat])
-                .addTo(mapCompare);
-
-            console.log("Sample values:", hourly.slice(0, 10));
-            console.log("Max:", Math.max(...hourly));
-
-            drawMeteogram(hourly, meta_wrf.timestamps);
-            document.getElementById("meteogramPanel").style.display = "block";
-            console.log("Meteogram max:", Math.max(...hourly));
-        });
 
         //====basemap-Select-Option========
         basemapSelect.onchange = () => {
 
             const type = basemapSelect.value;
             map.getSource('basemap').setTiles(BASEMAPS[type]);
-            mapCompare.getSource('basemap').setTiles(BASEMAPS[type]);
 
         };
         //============SEARCH===================
@@ -961,20 +1057,6 @@
             new maplibregl.Marker({ color: "yellow" })
                 .setLngLat([lon, lat])
                 .addTo(map);
-
-            // fly to location
-            mapCompare.flyTo({
-                center: [lon, lat],
-                zoom: 8
-            });
-            mapCompare.fire('click', {
-                lngLat: { lng: lon, lat: lat }
-            });
-
-            // optional marker
-            new maplibregl.Marker({ color: "yellow" })
-                .setLngLat([lon, lat])
-                .addTo(mapCompare);
 
         };
 
@@ -1096,21 +1178,6 @@
                 .setLngLat([lon, lat])
                 .addTo(map);
 
-            // fly to location
-            mapCompare.flyTo({
-                center: [lon, lat],
-                zoom: 8
-            });
-
-            // trigger existing logic (VERY IMPORTANT)
-            mapCompare.fire('click', {
-                lngLat: { lng: lon, lat: lat }
-            });
-
-            // optional marker
-            new maplibregl.Marker({ color: "lime" })
-                .setLngLat([lon, lat])
-                .addTo(mapCompare);
         };
 
         latInput.addEventListener("keydown", e => {
@@ -1138,20 +1205,23 @@
             fps = parseFloat(speed.value);
         };
         timeline.oninput = () => {
-            frame = parseInt(timeline.value);
+            setFrame(parseInt(timeline.value));
+        };
 
-        }
+
 
         // STEP FORWARD
         stepForward.onclick = () => {
             playing = false;
-            frame = (frame % 72) + 1;
+            setFrame(frame + 1);
+
+
         };
 
         // STEP BACK
         stepBack.onclick = () => {
             playing = false;
-            frame = (frame - 2 + 72) % 72 + 1;
+            setFrame(frame + 1);
         };
 
         // REVERSE PLAY
@@ -1167,6 +1237,25 @@
             direction = 1;
             playPause.textContent = playing ? "⏸ Pause" : "▶ Play";
         };
+        let lastFrameTime = 0;
+        let lastContourFrame = -1;
+
+        function animate(now) {
+
+            requestAnimationFrame(animate);
+
+            if (!playing || !loaded) return;
+
+            const interval = 1000 / fps;
+
+            if (now - lastFrameTime < interval) return;
+
+            lastFrameTime = now;
+
+            setFrame(frame + direction);
+        }
+
+        requestAnimationFrame(animate);
 
         function findNearestIndex(arr, val) {
             if (!arr || arr.length === 0) {
@@ -1378,250 +1467,28 @@
                 }
             });
 
-            const customLayer = {
 
-                id: 'rain-layer',
-                type: 'custom',
-                renderingMode: '2d',
+            resizeMapToBBox();
 
-                onAdd: function (map, gl) {
-
-                    gl.getExtension('EXT_color_buffer_float');
-                    gl.getExtension('OES_texture_float_linear');
-                    gl.getExtension('OES_texture_float');
-                    const vs = `
-            attribute vec2 a_pos;
-
-            uniform mat4 u_matrix;
-            uniform vec2 u_min;
-            uniform vec2 u_max;
-
-            varying vec2 v_uv;
-
-            void main() {
-                v_uv = (a_pos - u_min) / (u_max - u_min);
-                gl_Position = u_matrix * vec4(a_pos, 0.0, 1.0);
-            }`;
-
-                    const fs = `
-            precision highp float;
-
-            uniform sampler2D u_rain;
-            varying vec2 v_uv;
-
-            void main() {
-
-                float t = texture2D(u_rain, v_uv).r;
-
-                vec3 c0 = vec3(0.0);
-                vec3 c1 = vec3(0.0, 0.2, 1.0);
-                vec3 c2 = vec3(0.0, 1.0, 1.0);
-                vec3 c3 = vec3(0.0, 1.0, 0.0);
-                vec3 c4 = vec3(1.0, 1.0, 0.0);
-                vec3 c5 = vec3(1.0, 0.5, 0.0);
-                vec3 c6 = vec3(1.0, 0.0, 0.0);
-
-                vec3 color;
-
-                if (t < 0.15)
-                    color = mix(c0, c1, t / 0.15);
-                else if (t < 0.3)
-                    color = mix(c1, c2, (t - 0.15) / 0.15);
-                else if (t < 0.5)
-                    color = mix(c2, c3, (t - 0.3) / 0.2);
-                else if (t < 0.7)
-                    color = mix(c3, c4, (t - 0.5) / 0.2);
-                else
-                    color = mix(c4, c6, (t - 0.7) / 0.3);
-
-                float alpha = smoothstep(0.01, 0.2, t);
-
-                gl_FragColor = vec4(color, alpha);
-            }`;
-
-                    function compile(type, src) {
-                        const s = gl.createShader(type);
-                        gl.shaderSource(s, src);
-                        gl.compileShader(s);
-                        return s;
-                    }
-
-                    const program = gl.createProgram();
-                    gl.attachShader(program, compile(gl.VERTEX_SHADER, vs));
-                    gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fs));
-                    gl.linkProgram(program);
-
-                    this.program = program;
-
-                    this.texture = gl.createTexture();
-
-                    this.a_pos = gl.getAttribLocation(program, "a_pos");
-                    this.u_matrix = gl.getUniformLocation(program, "u_matrix");
-                    this.u_rain = gl.getUniformLocation(program, "u_rain");
-                    this.u_min = gl.getUniformLocation(program, "u_min");
-                    this.u_max = gl.getUniformLocation(program, "u_max");
-                    // this.u_scale = gl.getUniformLocation(program, "u_scale");
-
-                    const [minLon, minLat, maxLon, maxLat] = BBOX;
-
-                    const p1 = maplibregl.MercatorCoordinate.fromLngLat([minLon, minLat]);
-                    const p2 = maplibregl.MercatorCoordinate.fromLngLat([maxLon, minLat]);
-                    const p3 = maplibregl.MercatorCoordinate.fromLngLat([minLon, maxLat]);
-                    const p4 = maplibregl.MercatorCoordinate.fromLngLat([maxLon, maxLat]);
-
-                    const vertices = new Float32Array([
-                        p1.x, p1.y,
-                        p2.x, p2.y,
-                        p3.x, p3.y,
-                        p3.x, p3.y,
-                        p2.x, p2.y,
-                        p4.x, p4.y
-                    ]);
-
-                    this.buffer = gl.createBuffer();
-                    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-                    gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-
-                    // this.min = [p1.x, p1.y];
-                    // this.max = [p4.x, p4.y];
-                    this.min = [Math.min(p1.x, p3.x), Math.min(p1.y, p2.y)];
-                    this.max = [Math.max(p2.x, p4.x), Math.max(p3.y, p4.y)];
-                },
-
-                render: function (gl, matrix) {
-
-                    if (!loaded) return;
-
-                    let data = framesLeft[frame];
-
-                    // 1️⃣ Gaussian blur (smooth rain field)
-                    if (BLUR_MODE === "gaussian") {
-                        data = gaussianBlur2D(data, WIDTH_WRF, HEIGHT_WRF, GAUSS_RADIUS);
-                    }
-
-                    // 2️⃣ Neighborhood max (radar style)
-                    if (USE_NEIGH_MAX) {
-                        data = neighborhoodMax3x3(data, WIDTH_WRF, HEIGHT_WRF);
-                    }
-
-                    // 3️⃣ Strong max filter (storm core detection)
-                    if (USE_MAX_FILTER) {
-                        data = maxFilter2D(data, WIDTH_WRF, HEIGHT_WRF, 1);
-                    }
-
-                    let maxVal = -Infinity;
-
-                    for (let i = 0; i < data.length; i++) {
-                        if (data[i] > maxVal) maxVal = data[i];
-                    }
-
-                    console.log(`Frame ${frame} → MAX rain: ${maxVal.toFixed(2)} mm`);
-
-                    const rgba = new Uint8Array(data.length * 4);
-
-                    for (let i = 0; i < data.length; i++) {
-                        let v = data[i] / SCALE_MAX;
-                        v = Math.min(1, Math.max(0, v));
-                        const val = v * 255;
-
-                        rgba[i * 4 + 0] = val;
-                        rgba[i * 4 + 1] = val;
-                        rgba[i * 4 + 2] = val;
-                        rgba[i * 4 + 3] = 255;
-                    }
-
-
-                    // gl.bindTexture(gl.TEXTURE_2D, this.texture);
-                    gl.bindTexture(gl.TEXTURE_2D, this.texture);
-
-                    gl.texImage2D(
-                        gl.TEXTURE_2D,
-                        0,
-                        gl.RGBA,
-                        WIDTH_WRF,
-                        HEIGHT_WRF,
-                        0,
-                        gl.RGBA,
-                        gl.UNSIGNED_BYTE,
-                        rgba
-                    );
-
-                    // gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-                    // gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-                    const filter = (BLUR_MODE === "none") ? gl.NEAREST : gl.LINEAR;
-
-                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
-                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
-
-                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-                    gl.useProgram(this.program);
-
-                    gl.uniformMatrix4fv(this.u_matrix, false, matrix);
-                    gl.uniform2fv(this.u_min, this.min);
-                    gl.uniform2fv(this.u_max, this.max);
-                    // gl.uniform1f(this.u_scale, SCALE_MAX);
-
-                    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-                    gl.enableVertexAttribArray(this.a_pos);
-                    gl.vertexAttribPointer(this.a_pos, 2, gl.FLOAT, false, 0, 0);
-
-                    gl.activeTexture(gl.TEXTURE0);
-                    gl.bindTexture(gl.TEXTURE_2D, this.texture);
-                    gl.uniform1i(this.u_rain, 0);
-
-                    gl.drawArrays(gl.TRIANGLES, 0, 6);
-
-                    if (playing) {
-                        const now = performance.now();
-                        if (!this.lastTime) this.lastTime = now;
-
-                        const delta = now - this.lastTime;
-
-                        const interval = 1000 / fps;
-
-                        if (delta >= interval) {
-                            const steps = Math.floor(delta / interval);
-                            frame = ((frame - 1 + direction * steps) % 72 + 72) % 72 + 1;
-                            this.lastTime += steps * interval;
-                        }
-                    }
-
-                    timeline.value = frame;
-                    frameLabel.textContent = "Frame: " + frame;
-                    updateTimeLabel(frame)
-
-                    if (meteogramChart) {
-
-                        const bars = meteogramChart.data.datasets[0];
-
-                        bars.backgroundColor = bars.data.map((v, i) => {
-
-                            if (i === frame - 1) return '#ff2d2d';
-
-                            if (v > 50) return '#ff0000';
-                            if (v > 20) return '#ff7f00';
-                            if (v > 10) return '#ffd700';
-                            if (v > 2) return '#00e5ff';
-                            return '#1e3a8a';
-                        });
-
-                        bars.borderWidth = bars.data.map((_, i) => i === frame - 1 ? 2 : 0);
-
-                        meteogramChart.update();
-                    }
-                    // if (meteogramChart) {
-                    //     meteogramChart.options.plugins.annotation.annotations.currentTime.xMin = frame - 1;
-                    //     meteogramChart.options.plugins.annotation.annotations.currentTime.xMax = frame - 1;
-                    //     meteogramChart.update();
-                    // }
-
-                    map.triggerRepaint();
+            map.fitBounds(
+                [
+                    [BBOX[0], BBOX[1]],
+                    [BBOX[2], BBOX[3]]
+                ],
+                {
+                    padding: 10,
+                    duration: 0
                 }
-            };
+            );
+            map.addLayer(createSplitLayer());
+        });
 
-            map.addLayer(customLayer);
+        map.on('mousemove', (e) => {
+            if (!isDragging) return;
+
+            const w = map.getCanvas().width;
+            SPLIT = e.point.x / w;
+            line.style.left = `${e.point.x}px`;
         });
 
         let activeMarker = null;
@@ -1640,40 +1507,29 @@
             const xi_wrf = findNearestIndex(LON_ARR_wrf, lon);
             const yi_wrf = findNearestIndex(LAT_ARR_wrf, lat);
 
-            const xi_gpm = findNearestIndex(LON_ARR_GPM, lon);
-            const yi_gpm = findNearestIndex(LAT_ARR_GPM, lat);
-
             const index_wrf = yi_wrf * WIDTH_WRF + xi_wrf;
-            const index_gpm = yi_gpm * WIDTH_GPM + xi_gpm;
 
             // extract rainfall series
             const hourly = [];
-            const hourly_right = [];
 
             for (let t = 1; t <= 72; t++) {
 
                 let dataLeft = framesLeft[t];
-                let dataRight = framesRight[t];
 
                 if (BLUR_MODE === "gaussian") {
                     dataLeft = gaussianBlur2D(dataLeft, WIDTH_WRF, HEIGHT_WRF, GAUSS_RADIUS);
-                    dataRight = gaussianBlur2D(dataRight, WIDTH_GPM, HEIGHT_GPM, GAUSS_RADIUS);
                 }
 
                 if (USE_NEIGH_MAX) {
                     dataLeft = neighborhoodMax3x3(dataLeft, WIDTH_WRF, HEIGHT_WRF);
-                    dataRight = neighborhoodMax3x3(dataRight, WIDTH_GPM, HEIGHT_GPM);
                 }
 
                 if (USE_MAX_FILTER) {
                     dataLeft = maxFilter2D(dataLeft, WIDTH_WRF, HEIGHT_WRF, 1);
-                    dataRight = maxFilter2D(dataRight, WIDTH_GPM, HEIGHT_GPM, 1);
                 }
 
-                if (!dataLeft || !dataRight) continue;
 
                 hourly.push(dataLeft[index_wrf]);
-                hourly_right.push(dataRight[index_gpm]);
             }
 
             // remove previous marker
@@ -1694,7 +1550,24 @@
             console.log("Meteogram max:", Math.max(...hourly));
         });
 
-        syncMaps(map, mapCompare);
+        let isDragging = false;
+
+        map.on('mousedown', () => isDragging = true);
+        map.on('mouseup', () => isDragging = false);
+
+        const line = document.createElement('div');
+        line.style.position = 'absolute';
+        line.style.top = '0';
+        line.style.bottom = '0';
+        line.style.width = '2px';
+        line.style.background = 'white';
+        line.style.pointerEvents = 'none';
+        document.body.appendChild(line);
+
+        window.addEventListener(
+            'resize',
+            resizeMapToBBox
+        );
 
 
     </script>

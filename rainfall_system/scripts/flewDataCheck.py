@@ -5,7 +5,9 @@ from matplotlib.widgets import Slider
 import geopandas as gpd
 
 # --- LOAD DATA ---
-ds = xr.open_dataset(r'F:\Saurabh\dashboard\wrfFrema\3km\FREMAA_2024060500Z.nc')
+ds = xr.open_dataset(r'wrfFrema\FLEWS_2026043000Z\wrfout_d02_2026-04-30_sub.nc')
+
+
 
 rain_inst = ds['rain'].diff(dim='time')
 lat = ds['lat']
@@ -64,7 +66,7 @@ ax.set_title(f"Time: {time_val}")
 
 # Time slider
 ax_time = plt.axes([0.2, 0.15, 0.6, 0.03])
-slider_time = Slider(ax_time, 'Time', 0, time_in , valinit=t0, valstep=1)
+slider_time = Slider(ax_time, 'Time', 0, len(rain_inst.values)-1 , valinit=t0, valstep=1)
 
 # Min slider
 ax_min = plt.axes([0.2, 0.09, 0.25, 0.03])
