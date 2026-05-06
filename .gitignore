@@ -10,3 +10,8 @@ data/bin
 GPM
 data
 GPM_hourly_bin
+gpm_to_wrf_weights.nc
+rainfall_system\backend\ingest\__pycache__
+.vscode/settings.json
+rainfall_system/__init__.py
+rainfall_system/backend/ingest/__pycache__/InterpolateGPMtoWRF.cpython-313.pyc
